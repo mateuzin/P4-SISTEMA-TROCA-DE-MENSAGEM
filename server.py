@@ -9,6 +9,7 @@ class MessageServer:
         self.queues = {}  # Armazena filas de mensagens para cada cliente
         self.clients = set()  # Armazena o estado de cada cliente (online/offline)
         self.client_states = {}  # Armazena o estado de cada cliente (online/offline)
+        self.client_contacts = {}  # Armazena a lista de contatos de cada cliente
         self.conn = stomp.Connection11()  # Conexão com o broker STOMP
         self.conn.connect('admin', 'admin', wait=True)
         self.conn.subscribe(destination='/queue/clients', id=1, ack='auto')
@@ -21,6 +22,7 @@ class MessageServer:
         self.clients.add(client_name)
         self.client_states[client_name] = False  # Inicialmente offline
         self.create_queue(client_name)
+        self.client_contacts[client_name] = set()  # Inicialmente sem contatos
         # Notifica todos os clientes sobre o novo cliente
         for client in self.clients:
             if client != client_name:
@@ -31,6 +33,7 @@ class MessageServer:
             self.clients.remove(client_name)
             del self.client_states[client_name]
             del self.queues[client_name]
+            del self.client_contacts[client_name]
 
     def set_online(self, client_name):
         self.client_states[client_name] = True
@@ -39,38 +42,36 @@ class MessageServer:
         self.client_states[client_name] = False
 
     def send_message(self, from_client, to_client, message):
-        if self.client_states.get(to_client, False):  # Se o cliente está online
+        if self.client_states.get(to_client, False):
             self.conn.send(destination=f'/queue/{to_client}', body=f'{from_client}: {message}')
-        else:  # Se o cliente está offline
-            self.queues[to_client].append((from_client, message))
+        else:
+            if to_client in self.queues:
+                self.queues[to_client].append((from_client, message))
 
     def get_messages(self, client_name):
         if client_name in self.queues:
             messages = self.queues[client_name]
-            self.queues[client_name] = []  # Limpa as mensagens após a leitura
+            self.queues[client_name] = []  # Limpa as mensagens após leitura
             return messages
         return []
 
+    def add_contact(self, client_name, contact_name):
+        if client_name in self.client_contacts:
+            self.client_contacts[client_name].add(contact_name)
+
+    def remove_contact(self, client_name, contact_name):
+        if client_name in self.client_contacts:
+            self.client_contacts[client_name].discard(contact_name)
+
     def get_all_clients(self):
         return list(self.clients)
-
-    def subscribe(self, client_name):
-        self.conn.subscribe(destination=f'/queue/{client_name}', id=1, ack='auto')
-
-    def unsubscribe(self, client_name):
-        self.conn.unsubscribe(destination=f'/queue/{client_name}', id=1)
-
-    def run(self):
-        while True:
-            time.sleep(1)
 
 def main():
     Pyro4.Daemon.serveSimple(
         {
             MessageServer(): "example.message.server"
         },
-        ns=True
-    )
+        ns=True)
 
 if __name__ == "__main__":
     main()

@@ -50,6 +50,9 @@ class ChatClient:
         # Botão para adicionar contatos
         tk.Button(self.contacts_frame, text="Adicionar Contato", command=self.add_contact).pack(pady=5)
 
+        # Botão para remover contatos
+        tk.Button(self.contacts_frame, text="Remover Contato", command=self.remove_contact).pack(pady=5)
+
         # Botão para iniciar conversa
         tk.Button(self.contacts_frame, text="Iniciar Conversa", command=self.start_conversation).pack(pady=5)
 
@@ -68,10 +71,25 @@ class ChatClient:
                 try:
                     # Adiciona o contato à lista de contatos local
                     self.contacts_listbox.insert(tk.END, contact_name)
+                    # Aqui, você pode adicionar lógica para notificar o servidor
+                    # para adicionar o contato se necessário
                 except Exception as e:
                     messagebox.showerror("Erro", f"Erro ao adicionar contato: {e}")
             else:
                 messagebox.showwarning("Aviso", "Nome de contato inválido.")
+
+    def remove_contact(self):
+        selected_contact = self.contacts_listbox.get(tk.ACTIVE)
+        if selected_contact:
+            try:
+                # Remove o contato da lista de contatos local
+                self.contacts_listbox.delete(tk.ACTIVE)
+                # Aqui, você pode adicionar lógica para notificar o servidor
+                # para remover o contato se necessário
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao remover contato: {e}")
+        else:
+            messagebox.showwarning("Aviso", "Nenhum contato selecionado.")
 
     def start_conversation(self):
         selected_contact = self.contacts_listbox.get(tk.ACTIVE)
