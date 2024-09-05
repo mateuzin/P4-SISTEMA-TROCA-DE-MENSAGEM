@@ -1,4 +1,3 @@
-# client.py
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import Pyro4
@@ -9,6 +8,7 @@ class ChatClient:
         self.name = None
         self.server = None
         self.current_conversation = None
+        self.online = False  # Estado inicial offline
         self.create_login_ui()
 
     def create_login_ui(self):
@@ -28,7 +28,6 @@ class ChatClient:
             try:
                 self.server = Pyro4.Proxy("PYRONAME:example.message.server")
                 self.server.register_client(self.name)
-
                 self.login_root.destroy()
                 self.create_ui()
             except Exception as e:
@@ -38,7 +37,6 @@ class ChatClient:
         self.root = tk.Tk()
         self.root.title(f"Chat - {self.name}")
 
-        # Frame para a lista de contatos
         self.contacts_frame = tk.Frame(self.root)
         self.contacts_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
 
@@ -47,16 +45,15 @@ class ChatClient:
         self.contacts_listbox = tk.Listbox(self.contacts_frame, selectmode=tk.SINGLE)
         self.contacts_listbox.pack(fill=tk.BOTH, expand=True)
 
-        # Botão para adicionar contatos
         tk.Button(self.contacts_frame, text="Adicionar Contato", command=self.add_contact).pack(pady=5)
-
-        # Botão para remover contatos
         tk.Button(self.contacts_frame, text="Remover Contato", command=self.remove_contact).pack(pady=5)
 
-        # Botão para iniciar conversa
+        # Botão Online/Offline
+        self.onOff_button = tk.Button(self.contacts_frame, text="OFFLINE", command=self.toggle_online_offline, bg="red")
+        self.onOff_button.pack(pady=5)
+
         tk.Button(self.contacts_frame, text="Iniciar Conversa", command=self.start_conversation).pack(pady=5)
 
-        # Frame para a conversa
         self.conversation_frame = tk.Frame(self.root)
         self.conversation_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
@@ -69,10 +66,8 @@ class ChatClient:
             contact_name = contact_name.strip()
             if contact_name and contact_name != self.name:
                 try:
-                    # Adiciona o contato à lista de contatos local
+                    self.server.add_contact(self.name, contact_name)  # Notifica o servidor para adicionar o contato
                     self.contacts_listbox.insert(tk.END, contact_name)
-                    # Aqui, você pode adicionar lógica para notificar o servidor
-                    # para adicionar o contato se necessário
                 except Exception as e:
                     messagebox.showerror("Erro", f"Erro ao adicionar contato: {e}")
             else:
@@ -82,10 +77,8 @@ class ChatClient:
         selected_contact = self.contacts_listbox.get(tk.ACTIVE)
         if selected_contact:
             try:
-                # Remove o contato da lista de contatos local
+                self.server.remove_contact(self.name, selected_contact)  # Notifica o servidor para remover o contato
                 self.contacts_listbox.delete(tk.ACTIVE)
-                # Aqui, você pode adicionar lógica para notificar o servidor
-                # para remover o contato se necessário
             except Exception as e:
                 messagebox.showerror("Erro", f"Erro ao remover contato: {e}")
         else:
@@ -96,9 +89,21 @@ class ChatClient:
         if selected_contact:
             if self.current_conversation:
                 self.current_conversation.destroy()
-            self.current_conversation = ConversationFrame(self.conversation_frame, self.server, self.name, selected_contact)
+            self.current_conversation = ConversationFrame(self.conversation_frame, self.server, self.name,
+                                                          selected_contact)
         else:
             messagebox.showwarning("Aviso", "Nenhum contato selecionado.")
+
+    def toggle_online_offline(self):
+        if self.online:
+            self.server.set_offline(self.name)
+            self.online = False
+            self.onOff_button.config(text="ONLINE", bg="green")
+
+        else:
+            self.server.set_online(self.name)
+            self.online = True
+            self.onOff_button.config(text="OFFLINE", bg="red")
 
     def on_closing(self):
         self.server.deregister_client(self.name)
@@ -122,11 +127,9 @@ class ConversationFrame(tk.Frame):
         self.entry.pack(fill=tk.X, pady=5)
         self.entry.bind("<Return>", self.send_message)
 
-        # Adiciona título informando com quem está conversando
         self.title_label = tk.Label(self, text=f"Conversa com {contact_name}", font=("Arial", 12, "bold"))
         self.title_label.pack(pady=5)
 
-        # Atualiza mensagens periodicamente
         self.update_messages()
 
     def send_message(self, event=None):
@@ -150,7 +153,7 @@ class ConversationFrame(tk.Frame):
         else:
             self.text_area.insert(tk.END, f'{from_client}: {message}\n', 'received')
         self.text_area.config(state=tk.DISABLED)
-        self.text_area.yview(tk.END)  # Auto-scroll para o final
+        self.text_area.yview(tk.END)
 
 
 def main():
