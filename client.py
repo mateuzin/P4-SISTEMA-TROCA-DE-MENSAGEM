@@ -1,164 +1,154 @@
+import stomp
 import tkinter as tk
-from tkinter import simpledialog, messagebox
-import Pyro4
+from tkinter import simpledialog, scrolledtext
+
+
+class ChatListener(stomp.ConnectionListener):
+    def __init__(self, client):
+        self.client = client
+
+    def on_message(self, frame):
+        headers = frame.headers
+        message = frame.body
+        print(f"Message received: {message}")
+
+        # Atualiza a janela de mensagens na thread principal do Tkinter
+        self.client.root.after(0, self.client.append_received_message, f"Received: {message}")
+
+    def on_error(self, headers, message):
+        print(f"Error received: {message}")
+
+    def on_disconnected(self):
+        print("Disconnected from broker")
 
 
 class ChatClient:
-    def __init__(self):
-        self.name = None
-        self.server = None
-        self.current_conversation = None
-        self.online = False  # Estado inicial offline
-        self.create_login_ui()
+    def __init__(self, root, username):
+        self.root = root
+        self.username = username
+        self.conn = None
+        self.is_connected = False
+        self.selected_contact = None  # Contato selecionado para iniciar a conversa
 
-    def create_login_ui(self):
-        self.login_root = tk.Tk()
-        self.login_root.title("Login")
+        # Interface do usuário
+        self.setup_ui()
 
-        tk.Label(self.login_root, text="Digite seu usuário:").pack(pady=5)
-        self.name_entry = tk.Entry(self.login_root)
-        self.name_entry.pack(pady=5)
-        tk.Button(self.login_root, text="Entrar", command=self.login).pack(pady=5)
+    def setup_ui(self):
+        self.root.title(f"Chat Application - {self.username}")
 
-        self.login_root.mainloop()
+        # Frame de contatos
+        contacts_frame = tk.Frame(self.root)
+        contacts_frame.pack(side=tk.LEFT, fill=tk.Y)
 
-    def login(self):
-        self.name = self.name_entry.get().strip()
-        if self.name:
-            try:
-                self.server = Pyro4.Proxy("PYRONAME:example.message.server")
-                self.server.register_client(self.name)
-                self.login_root.destroy()
-                self.create_ui()
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao conectar ao servidor: {e}")
+        self.contacts_list = tk.Listbox(contacts_frame)
+        self.contacts_list.pack(fill=tk.BOTH, expand=True)
 
-    def create_ui(self):
-        self.root = tk.Tk()
-        self.root.title(f"Chat - {self.name}")
+        add_contact_button = tk.Button(contacts_frame, text="Adicionar Contato", command=self.add_contact)
+        add_contact_button.pack()
 
-        self.contacts_frame = tk.Frame(self.root)
-        self.contacts_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        remove_contact_button = tk.Button(contacts_frame, text="Remover Contato", command=self.remove_contact)
+        remove_contact_button.pack()
 
-        tk.Label(self.contacts_frame, text="Contatos").pack()
+        start_chat_button = tk.Button(contacts_frame, text="Iniciar Conversa", command=self.start_chat)
+        start_chat_button.pack()
 
-        self.contacts_listbox = tk.Listbox(self.contacts_frame, selectmode=tk.SINGLE)
-        self.contacts_listbox.pack(fill=tk.BOTH, expand=True)
+        # Botão de conectar/desconectar
+        self.connect_button = tk.Button(contacts_frame, text="Conectar", command=self.toggle_connection)
+        self.connect_button.pack()
 
-        tk.Button(self.contacts_frame, text="Adicionar Contato", command=self.add_contact).pack(pady=5)
-        tk.Button(self.contacts_frame, text="Remover Contato", command=self.remove_contact).pack(pady=5)
+        # Frame de mensagens recebidas
+        self.received_frame = tk.Frame(self.root)
+        self.received_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Botão Online/Offline
-        self.onOff_button = tk.Button(self.contacts_frame, text="OFFLINE", command=self.toggle_online_offline, bg="red")
-        self.onOff_button.pack(pady=5)
+        tk.Label(self.received_frame, text="Mensagens Recebidas").pack()
+        self.received_messages = scrolledtext.ScrolledText(self.received_frame, wrap=tk.WORD)
+        self.received_messages.pack(fill=tk.BOTH, expand=True)
 
-        tk.Button(self.contacts_frame, text="Iniciar Conversa", command=self.start_conversation).pack(pady=5)
+        # Frame de envio de mensagens
+        self.send_frame = tk.Frame(self.root)
+        self.send_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        self.conversation_frame = tk.Frame(self.root)
-        self.conversation_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.message_entry = tk.Entry(self.send_frame)
+        self.message_entry.pack(fill=tk.X)
 
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.root.mainloop()
+        self.send_button = tk.Button(self.send_frame, text="Send", command=self.send_message)
+        self.send_button.pack()
+
+        self.disable_send_panel()  # Inicialmente desativa o painel de envio de mensagens
+
+    def enable_send_panel(self):
+        """Habilita o painel de envio de mensagens."""
+        self.message_entry.config(state=tk.NORMAL)
+        self.send_button.config(state=tk.NORMAL)
+
+    def disable_send_panel(self):
+        """Desabilita o painel de envio de mensagens."""
+        self.message_entry.config(state=tk.DISABLED)
+        self.send_button.config(state=tk.DISABLED)
+
+    def append_received_message(self, message):
+        self.received_messages.insert(tk.END, f"{message}\n")
+        self.received_messages.yview(tk.END)  # Auto-scroll para o final
 
     def add_contact(self):
-        contact_name = simpledialog.askstring("Adicionar Contato", "Digite o nome do contato:")
+        contact_name = simpledialog.askstring("Aicionar contato", "Escreva o nome do contato:")
         if contact_name:
-            contact_name = contact_name.strip()
-            if contact_name and contact_name != self.name:
-                try:
-                    self.server.add_contact(self.name, contact_name)  # Notifica o servidor para adicionar o contato
-                    self.contacts_listbox.insert(tk.END, contact_name)
-                except Exception as e:
-                    messagebox.showerror("Erro", f"Erro ao adicionar contato: {e}")
-            else:
-                messagebox.showwarning("Aviso", "Nome de contato inválido.")
+            self.contacts_list.insert(tk.END, contact_name)
 
     def remove_contact(self):
-        selected_contact = self.contacts_listbox.get(tk.ACTIVE)
-        if selected_contact:
-            try:
-                self.server.remove_contact(self.name, selected_contact)  # Notifica o servidor para remover o contato
-                self.contacts_listbox.delete(tk.ACTIVE)
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao remover contato: {e}")
+        selected = self.contacts_list.curselection()
+        if selected:
+            self.contacts_list.delete(selected[0])
+
+    def start_chat(self):
+        selected = self.contacts_list.curselection()
+        if selected:
+            self.selected_contact = self.contacts_list.get(selected[0])
+            self.enable_send_panel()
+            print(f"Chat iniciado com {self.selected_contact}")
+
+    def send_message(self):
+        if self.selected_contact:
+            message = self.message_entry.get()
+            if message:
+                destination = f'/queue/{self.selected_contact}'
+                self.conn.send(destination, message)
+                print(f"Message sent to {self.selected_contact}: {message}")
+                self.message_entry.delete(0, tk.END)
+
+    def connect(self):
+        if not self.is_connected:
+            self.conn = stomp.Connection([('localhost', 61613)])
+            self.conn.set_listener('', ChatListener(self))
+            self.conn.connect(wait=True)
+            self.conn.subscribe(f'/queue/{self.username}', id=1, ack='auto')
+            self.is_connected = True
+            print("Connected to broker")
+            self.connect_button.config(text="Desconectar")
+            self.enable_send_panel()  # Habilita o painel de envio de mensagens ao conectar
+
+    def disconnect(self):
+        if self.is_connected:
+            self.conn.disconnect()
+            self.is_connected = False
+            print("Disconnected from broker")
+            self.connect_button.config(text="Conectar")
+            self.disable_send_panel()  # Desativa o painel de envio de mensagens ao desconectar
+
+    def toggle_connection(self):
+        if self.is_connected:
+            self.disconnect()
         else:
-            messagebox.showwarning("Aviso", "Nenhum contato selecionado.")
-
-    def start_conversation(self):
-        selected_contact = self.contacts_listbox.get(tk.ACTIVE)
-        if selected_contact:
-            if self.current_conversation:
-                self.current_conversation.destroy()
-            self.current_conversation = ConversationFrame(self.conversation_frame, self.server, self.name,
-                                                          selected_contact)
-        else:
-            messagebox.showwarning("Aviso", "Nenhum contato selecionado.")
-
-    def toggle_online_offline(self):
-        if self.online:
-            self.server.set_offline(self.name)
-            self.online = False
-            self.onOff_button.config(text="ONLINE", bg="green")
-
-        else:
-            self.server.set_online(self.name)
-            self.online = True
-            self.onOff_button.config(text="OFFLINE", bg="red")
-
-    def on_closing(self):
-        self.server.deregister_client(self.name)
-        self.server.set_offline(self.name)
-        self.root.destroy()
+            self.connect()
 
 
-class ConversationFrame(tk.Frame):
-    def __init__(self, master, server, my_name, contact_name):
-        super().__init__(master)
-        self.server = server
-        self.my_name = my_name
-        self.contact_name = contact_name
-
-        self.pack(fill=tk.BOTH, expand=True)
-
-        self.text_area = tk.Text(self, state=tk.DISABLED)
-        self.text_area.pack(fill=tk.BOTH, expand=True)
-
-        self.entry = tk.Entry(self)
-        self.entry.pack(fill=tk.X, pady=5)
-        self.entry.bind("<Return>", self.send_message)
-
-        self.title_label = tk.Label(self, text=f"Conversa com {contact_name}", font=("Arial", 12, "bold"))
-        self.title_label.pack(pady=5)
-
-        self.update_messages()
-
-    def send_message(self, event=None):
-        message = self.entry.get()
-        if message:
-            self.server.send_message(self.my_name, self.contact_name, message)
-            self.display_message(self.my_name, message, is_sent=True)
-            self.entry.delete(0, tk.END)
-
-    def update_messages(self):
-        messages = self.server.get_messages(self.my_name)
-        for from_client, message in messages:
-            if from_client == self.contact_name:
-                self.display_message(from_client, message, is_sent=False)
-        self.after(1000, self.update_messages)
-
-    def display_message(self, from_client, message, is_sent):
-        self.text_area.config(state=tk.NORMAL)
-        if is_sent:
-            self.text_area.insert(tk.END, f'Você: {message}\n', 'sent')
-        else:
-            self.text_area.insert(tk.END, f'{from_client}: {message}\n', 'received')
-        self.text_area.config(state=tk.DISABLED)
-        self.text_area.yview(tk.END)
-
-
-def main():
-    ChatClient()
+def start_chat_app(username):
+    root = tk.Tk()
+    app = ChatClient(root, username)
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    main()
+    username = simpledialog.askstring("Usuario", "Escreva seu usuario:")
+    if username:
+        start_chat_app(username)
