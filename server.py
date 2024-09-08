@@ -1,94 +1,144 @@
+import tkinter as tk
+from tkinter import messagebox
 import Pyro4
 import stomp
+import threading
+import json
+from collections import defaultdict
 
+class ServerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Servidor de Mensagens")
+
+        # Interface
+        self.ip_label = tk.Label(root, text="IP do Servidor de Nomes:")
+        self.ip_label.pack(pady=5)
+
+        self.ip_entry = tk.Entry(root)
+        self.ip_entry.pack(pady=5)
+
+        self.start_button = tk.Button(root, text="Iniciar Servidor", command=self.start_server)
+        self.start_button.pack(pady=10)
+
+        self.status_label = tk.Label(root, text="Status: Offline", fg="red")
+        self.status_label.pack(pady=10)
+
+        # Inicializa o servidor
+        self.server = None
+        self.server_thread = None
+
+    def start_server(self):
+        nameserver_ip = self.ip_entry.get()
+        if not nameserver_ip:
+            messagebox.showerror("Erro", "O IP do servidor de nomes não pode estar vazio.")
+            return
+
+        # Inicia o servidor em uma nova thread para não bloquear a interface gráfica
+        if self.server_thread is None or not self.server_thread.is_alive():
+            self.server_thread = threading.Thread(target=self.run_server, args=(nameserver_ip,))
+            self.server_thread.start()
+            self.status_label.config(text="Status: Online", fg="green")
+
+    def run_server(self, nameserver_ip):
+        """ Função para iniciar o servidor Pyro4 """
+        daemon = Pyro4.Daemon(nameserver_ip)
+        server = MessageServer()
+        ns = Pyro4.locateNS()
+        uri = daemon.register(server)
+        ns.register("TESTE", uri)
+
+        print("Servidor Pyro4 iniciado. Aguardando requisições...")
+        server.connect_to_broker()
+        daemon.requestLoop()
+
+    def stop_server(self):
+        """ Encerra o servidor e atualiza o status """
+        if self.server:
+            self.server.stop()
+            self.status_label.config(text="Status: Offline", fg="red")
 @Pyro4.expose
 class MessageServer:
     def __init__(self):
-        self.queues = {}  # Armazena filas de mensagens para cada cliente
-        self.clients = set()  # Armazena o estado de cada cliente (online/offline)
-        self.client_states = {}
-        self.client_contacts = {}
-        self.subscription_ids = {}  # Armazena os IDs de inscrição para cada cliente
-        self.conn = stomp.Connection11()  # Conexão com o broker STOMP
-        self.conn.connect('admin', 'admin', wait=True)
+        self.clients = []
+        self.stomp_connection = None
+        self.message_queues = defaultdict(list)
+        self.client_online_status = defaultdict(bool)
 
-    def create_queue(self, client_name):
-        if client_name not in self.queues:
-            self.queues[client_name] = []
-            # Gerar um ID único para a inscrição
-            subscription_id = len(self.queues)
-            self.subscription_ids[client_name] = subscription_id
-            self.conn.subscribe(destination=f'/queue/{client_name}', id=subscription_id, ack='auto')
+    def connect_to_broker(self, host='localhost', port=61613):
+        """ Conecta ao broker STOMP e configura o listener de mensagens """
+        self.stomp_connection = stomp.Connection([(host, port)])
+        self.stomp_connection.set_listener('', BrokerListener(self))
+        self.stomp_connection.connect(wait=True)
+        print("Connected to broker STOMP")
 
     def register_client(self, client_name):
-        self.clients.add(client_name)
-        self.client_states[client_name] = False  # Inicialmente offline
-        self.create_queue(client_name)
-        self.client_contacts[client_name] = set()  # Inicialmente sem contatos
+        """ Registra um cliente e cria uma fila para ele no broker """
+        self.clients.append({"nome": client_name, "notify": False, "message": ""})
+        self.stomp_connection.subscribe(f'/queue/{client_name}', id=1, ack='auto')
+        self.client_online_status[client_name] = True
+        print(f"Client {client_name} registered and subscribed to queue")
 
-    def deregister_client(self, client_name):
-        if client_name in self.clients:
-            self.clients.remove(client_name)
-            del self.client_states[client_name]
-            del self.queues[client_name]
-            del self.client_contacts[client_name]
-            # Remover a inscrição associada ao cliente
-            if client_name in self.subscription_ids:
-                del self.subscription_ids[client_name]
+    def get_clients(self):
+        """ Retorna a lista de clientes com suas mensagens e notificações """
+        return self.clients
 
-    def set_online(self, client_name):
-        self.client_states[client_name] = True
-        # Reinscrever para receber mensagens
-        subscription_id = self.subscription_ids.get(client_name)
-        if subscription_id is not None:
-            self.conn.subscribe(destination=f'/queue/{client_name}', id=subscription_id, ack='auto')
+    def msg_acknowledge(self, client_name):
+        """ Reconhece a mensagem recebida e reseta a notificação """
+        for client in self.clients:
+            if client["nome"] == client_name:
+                client["notify"] = False
+                client["message"] = ""
+                break
 
-        # Enviar mensagens pendentes para o cliente que ficou online
-        pending_messages = self.get_messages(client_name)
-        for from_client, message in pending_messages:
-            self.conn.send(destination=f'/queue/{client_name}', body=f'{from_client}: {message}')
+    def msg_callback(self, body):
+        """ Callback para quando uma mensagem é recebida do broker """
+        content = json.loads(body)
+        sender = content['sender']
+        receiver = content['receiver']
+        message = content['message']
+        print(f'Message received from {sender} to {receiver}: {message}')
 
-    def set_offline(self, client_name):
-        self.client_states[client_name] = False
-        self.unsubscribe_from_client_queues(client_name)  # Cancelar inscrição da fila
-
-    def send_message(self, from_client, to_client, message):
-        if self.client_states.get(to_client, False):
-            self.conn.send(destination=f'/queue/{to_client}', body=f'{from_client}: {message}')
+        if not self.client_online_status[receiver]:
+            self.message_queues[receiver].append(f'{sender}: {message}')
         else:
-            if to_client in self.queues:
-                self.queues[to_client].append((from_client, message))  # Armazena a mensagem para entrega posterior
+            for client in self.clients:
+                if client["nome"] == receiver:
+                    client["notify"] = True
+                    client["message"] = f'{sender}: {message}'
+                    break
 
-    def get_messages(self, client_name):
-        if client_name in self.queues:
-            messages = self.queues[client_name]
-            self.queues[client_name] = []  # Limpa as mensagens após leitura
-            return messages
-        return []
+    def send_message(self, sender, receiver, message):
+        """ Envia uma mensagem de um cliente para outro através do broker """
+        content = json.dumps({"sender": sender, "receiver": receiver, "message": message})
+        self.stomp_connection.send(destination=f'/queue/{receiver}', body=content)
+        print(f"Message sent from {sender} to {receiver}: {message}")
 
-    def add_contact(self, client_name, contact_name):
-        if client_name in self.client_contacts:
-            self.client_contacts[client_name].add(contact_name)
+    def set_client_status(self, client_name, is_online):
+        """ Atualiza o status de um cliente (conectado/desconectado) """
+        self.client_online_status[client_name] = is_online
 
-    def remove_contact(self, client_name, contact_name):
-        if client_name in self.client_contacts:
-            self.client_contacts[client_name].discard(contact_name)
+    def get_pending_messages(self, client_name):
+        """ Retorna todas as mensagens pendentes para o cliente """
+        messages = self.message_queues[client_name]
+        self.message_queues[client_name] = []
+        return messages
 
-    def unsubscribe_from_client_queues(self, client_name):
-        if client_name in self.subscription_ids:
-            # Usar o ID de inscrição ao cancelar a inscrição
-            subscription_id = self.subscription_ids[client_name]
-            self.conn.unsubscribe(id=subscription_id)
+class BrokerListener(stomp.ConnectionListener):
+    def __init__(self, server):
+        self.server = server
 
-    def get_all_clients(self):
-        return list(self.clients)
+    def on_message(self, frame):
+        message_body = frame.body
+        self.server.msg_callback(message_body)
 
-def main():
-    Pyro4.Daemon.serveSimple(
-        {
-            MessageServer(): "example.message.server"
-        },
-        ns=True)
+    def on_error(self, headers, message):
+        print(f"Error received: {message}")
+
+    def on_disconnected(self):
+        print("Disconnected from broker")
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = ServerApp(root)
+    root.mainloop()

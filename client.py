@@ -1,34 +1,22 @@
-import stomp
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
-
-
-class ChatListener(stomp.ConnectionListener):
-    def __init__(self, client):
-        self.client = client
-
-    def on_message(self, frame):
-        headers = frame.headers
-        message = frame.body
-        print(f"Message received: {message}")
-
-        # Atualiza a janela de mensagens na thread principal do Tkinter
-        self.client.root.after(0, self.client.append_received_message, f"Received: {message}")
-
-    def on_error(self, headers, message):
-        print(f"Error received: {message}")
-
-    def on_disconnected(self):
-        print("Disconnected from broker")
+import Pyro4
+import threading
 
 
 class ChatClient:
-    def __init__(self, root, username):
+    def __init__(self, root, username, nameserver_ip):
         self.root = root
         self.username = username
-        self.conn = None
         self.is_connected = False
         self.selected_contact = None  # Contato selecionado para iniciar a conversa
+        self.message_fetch_thread = None
+
+        # Conecta ao servidor Pyro4
+        self.message_server = Pyro4.Proxy(f"PYRONAME:TESTE@{nameserver_ip}")
+
+        # Registra o cliente no servidor Pyro4
+        self.message_server.register_client(self.username)
 
         # Interface do usuário
         self.setup_ui()
@@ -68,6 +56,9 @@ class ChatClient:
         self.send_frame = tk.Frame(self.root)
         self.send_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
+        self.contact_label = tk.Label(self.send_frame, text="Contato:")
+        self.contact_label.pack()
+
         self.message_entry = tk.Entry(self.send_frame)
         self.message_entry.pack(fill=tk.X)
 
@@ -91,7 +82,7 @@ class ChatClient:
         self.received_messages.yview(tk.END)  # Auto-scroll para o final
 
     def add_contact(self):
-        contact_name = simpledialog.askstring("Aicionar contato", "Escreva o nome do contato:")
+        contact_name = simpledialog.askstring("Adicionar contato", "Escreva o nome do contato:")
         if contact_name:
             self.contacts_list.insert(tk.END, contact_name)
 
@@ -104,6 +95,7 @@ class ChatClient:
         selected = self.contacts_list.curselection()
         if selected:
             self.selected_contact = self.contacts_list.get(selected[0])
+            self.contact_label.config(text=f"Enviando para: {self.selected_contact}")
             self.enable_send_panel()
             print(f"Chat iniciado com {self.selected_contact}")
 
@@ -111,44 +103,59 @@ class ChatClient:
         if self.selected_contact:
             message = self.message_entry.get()
             if message:
-                destination = f'/queue/{self.selected_contact}'
-                self.conn.send(destination, message)
+                # Envia a mensagem ao servidor, que a repassa ao broker
+                self.message_server.send_message(self.username, self.selected_contact, message)
                 print(f"Message sent to {self.selected_contact}: {message}")
                 self.message_entry.delete(0, tk.END)
 
-    def connect(self):
-        if not self.is_connected:
-            self.conn = stomp.Connection([('localhost', 61613)])
-            self.conn.set_listener('', ChatListener(self))
-            self.conn.connect(wait=True)
-            self.conn.subscribe(f'/queue/{self.username}', id=1, ack='auto')
-            self.is_connected = True
-            print("Connected to broker")
-            self.connect_button.config(text="Desconectar")
-            self.enable_send_panel()  # Habilita o painel de envio de mensagens ao conectar
-
-    def disconnect(self):
-        if self.is_connected:
-            self.conn.disconnect()
-            self.is_connected = False
-            print("Disconnected from broker")
-            self.connect_button.config(text="Conectar")
-            self.disable_send_panel()  # Desativa o painel de envio de mensagens ao desconectar
-
     def toggle_connection(self):
+        """Gerencia o estado de conexão/desconexão do cliente."""
         if self.is_connected:
-            self.disconnect()
+            # Desconecta o cliente
+            self.message_server.set_client_status(self.username, False)
+            self.is_connected = False
+            self.connect_button.config(text="Conectar")
+            self.disable_send_panel()
+            if self.message_fetch_thread:
+                self.message_fetch_thread.join(timeout=1)  # Espera a thread parar
         else:
-            self.connect()
+            # Conecta o cliente
+            self.message_server.set_client_status(self.username, True)
+            self.is_connected = True
+            self.connect_button.config(text="Desconectar")
+            self.enable_send_panel()
+            self.fetch_pending_messages()  # Busca as mensagens pendentes
+
+    def fetch_pending_messages(self):
+        """Busca e exibe mensagens pendentes quando o cliente se conecta."""
+        pending_messages = self.message_server.get_pending_messages(self.username)
+        for message in pending_messages:
+            self.append_received_message(message)
+
+        # Inicia uma nova thread para buscar mensagens periodicamente
+        self.message_fetch_thread = threading.Thread(target=self.fetch_messages)
+        self.message_fetch_thread.daemon = True
+        self.message_fetch_thread.start()
+
+    def fetch_messages(self):
+        """Busca periodicamente mensagens do servidor."""
+        while self.is_connected:
+            clients = self.message_server.get_clients()
+            for client in clients:
+                if client["nome"] == self.username and client["notify"]:
+                    self.append_received_message(client["message"])
+                    self.message_server.msg_acknowledge(self.username)
+            threading.Event().wait(2)
 
 
-def start_chat_app(username):
+def start_chat_app(username, nameserver_ip):
     root = tk.Tk()
-    app = ChatClient(root, username)
+    app = ChatClient(root, username, nameserver_ip)
     root.mainloop()
 
 
 if __name__ == "__main__":
-    username = simpledialog.askstring("Usuario", "Escreva seu usuario:")
-    if username:
-        start_chat_app(username)
+    username = simpledialog.askstring("Usuário", "Escreva seu usuário:")
+    nameserver_ip = simpledialog.askstring("IP do Servidor de Nomes", "Escreva o IP do Servidor de Nomes Pyro4:")
+    if username and nameserver_ip:
+        start_chat_app(username, nameserver_ip)
